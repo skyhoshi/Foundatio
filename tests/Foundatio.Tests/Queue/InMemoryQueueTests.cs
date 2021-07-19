@@ -45,19 +45,19 @@ namespace Foundatio.Tests.Queue {
                 try {
                     disposables.Add(q.Enqueuing.AddHandler(async (sender, args) => {
                         await SystemClock.SleepAsync(250);
-                        _logger.LogInformation("First Enqueuing.");
+                        _logger.LogInformation("First Enqueuing");
                     }));
                     disposables.Add(q.Enqueuing.AddHandler(async (sender, args) => {
                         await SystemClock.SleepAsync(250);
-                        _logger.LogInformation("Second Enqueuing.");
+                        _logger.LogInformation("Second Enqueuing");
                     }));
                     disposables.Add(q.Enqueued.AddHandler(async (sender, args) => {
                         await SystemClock.SleepAsync(250);
-                        _logger.LogInformation("First.");
+                        _logger.LogInformation("First");
                     }));
                     disposables.Add(q.Enqueued.AddHandler(async (sender, args) => {
                         await SystemClock.SleepAsync(250);
-                        _logger.LogInformation("Second.");
+                        _logger.LogInformation("Second");
                     }));
 
                     var sw = Stopwatch.StartNew();
@@ -79,6 +79,11 @@ namespace Foundatio.Tests.Queue {
         [Fact]
         public override Task CanQueueAndDequeueWorkItemAsync() {
             return base.CanQueueAndDequeueWorkItemAsync();
+        }
+
+        [Fact]
+        public override Task CanQueueAndDequeueWorkItemWithDelayAsync() {
+            return base.CanQueueAndDequeueWorkItemWithDelayAsync();
         }
 
         [Fact]

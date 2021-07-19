@@ -83,6 +83,43 @@ namespace Foundatio.Tests.Queue {
             }
         }
 
+        public virtual async Task CanQueueAndDequeueWorkItemWithDelayAsync() {
+            var queue = GetQueue();
+            if (queue == null)
+                return;
+
+            try {
+                await queue.DeleteQueueAsync();
+                await AssertEmptyQueueAsync(queue);
+
+                await queue.EnqueueAsync(new SimpleWorkItem {
+                    Data = "Hello"
+                }, new QueueEntryOptions { DeliveryDelay = TimeSpan.FromSeconds(1) });
+                Assert.Equal(1, (await queue.GetQueueStatsAsync()).Enqueued);
+
+                var workItem = await queue.DequeueAsync(TimeSpan.Zero);
+                Assert.Null(workItem);
+
+                workItem = await queue.DequeueAsync(TimeSpan.FromSeconds(2));
+                Assert.NotNull(workItem);
+                Assert.Equal("Hello", workItem.Value.Data);
+                if (_assertStats)
+                    Assert.Equal(1, (await queue.GetQueueStatsAsync()).Dequeued);
+
+                await workItem.CompleteAsync();
+                Assert.False(workItem.IsAbandoned);
+                Assert.True(workItem.IsCompleted);
+                
+                if (_assertStats) {
+                    var stats = await queue.GetQueueStatsAsync();
+                    Assert.Equal(1, stats.Completed);
+                    Assert.Equal(0, stats.Queued);
+                }
+            } finally {
+                await CleanupQueueAsync(queue);
+            }
+        }
+
         public virtual async Task CanUseQueueOptionsAsync() {
             var queue = GetQueue(retryDelay: TimeSpan.Zero);
             if (queue == null)
@@ -308,21 +345,21 @@ namespace Foundatio.Tests.Queue {
                 queue.AttachBehavior(new MetricsQueueBehavior<SimpleWorkItem>(metrics, reportCountsInterval: TimeSpan.FromMilliseconds(100), loggerFactory: Log));
 
                 Task.Run(async () => {
-                    _logger.LogTrace("Starting enqueue loop.");
+                    _logger.LogTrace("Starting enqueue loop");
                     for (int index = 0; index < iterations; index++) {
                         await SystemClock.SleepAsync(RandomData.GetInt(10, 30));
                         await queue.EnqueueAsync(new SimpleWorkItem { Data = "Hello" });
                     }
-                    _logger.LogTrace("Finished enqueuing.");
+                    _logger.LogTrace("Finished enqueuing");
                 });
 
-                _logger.LogTrace("Starting dequeue loop.");
+                _logger.LogTrace("Starting dequeue loop");
                 for (int index = 0; index < iterations; index++) {
                     var item = await queue.DequeueAsync(TimeSpan.FromSeconds(3));
                     Assert.NotNull(item);
                     await item.CompleteAsync();
                 }
-                _logger.LogTrace("Finished dequeuing.");
+                _logger.LogTrace("Finished dequeuing");
 
                 await metrics.FlushAsync();
                 var timing = await metrics.GetTimerStatsAsync("simpleworkitem.queuetime");
@@ -353,7 +390,7 @@ namespace Foundatio.Tests.Queue {
                 using var secondQueue = GetQueue(runQueueMaintenance: false);
                 secondQueue.AttachBehavior(new MetricsQueueBehavior<SimpleWorkItem>(metrics, reportCountsInterval: TimeSpan.FromMilliseconds(100), loggerFactory: Log));
 
-                _logger.LogTrace("Starting dequeue loop.");
+                _logger.LogTrace("Starting dequeue loop");
                 for (int index = 0; index < iterations; index++) {
                     if (_logger.IsEnabled(LogLevel.Trace)) _logger.LogTrace("[{Index}] Calling Dequeue", index);
                     var item = await secondQueue.DequeueAsync(TimeSpan.FromSeconds(3));
