@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using Foundatio.Caching;
 using Foundatio.Extensions.Hosting.Jobs;
 using Foundatio.Extensions.Hosting.Startup;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -64,6 +67,24 @@ public class Program
 
                     app.UseHealthChecks("/health");
                     app.UseReadyHealthChecks("Critical");
+                    app.UseRouting();
+
+                    app.UseEndpoints(e =>
+                    {
+                        e.MapGet("/jobstatus", httpContext =>
+                        {
+                            var jobManager = httpContext.RequestServices.GetRequiredService<JobManager>();
+                            var status = jobManager.GetJobStatus();
+                            return httpContext.Response.WriteAsJsonAsync(status);
+                        });
+
+                        e.MapGet("/runjob", async httpContext =>
+                        {
+                            var jobManager = httpContext.RequestServices.GetRequiredService<JobManager>();
+                            await jobManager.RunJobAsync("EvenMinutes");
+                            await jobManager.RunJobAsync<EveryMinuteJob>();
+                        });
+                    });
 
                     // this middleware will return Service Unavailable until the startup actions have completed
                     app.UseWaitForStartupActionsBeforeServingRequests();
@@ -75,6 +96,7 @@ public class Program
             {
                 // will shutdown the host if no jobs are running
                 s.AddJobLifetimeService();
+                s.AddSingleton<ICacheClient>(_ => new InMemoryCacheClient());
 
                 // inserts a startup action that does not complete until the critical health checks are healthy
                 // gets inserted as 1st startup action so that any other startup actions dont run until the critical resources are available
@@ -87,18 +109,25 @@ public class Program
                 s.AddHealthChecks().AddCheckForStartupActions("Critical");
 
                 if (everyMinute)
-                    s.AddCronJob<EveryMinuteJob>("* * * * *");
+                    s.AddDistributedCronJob<EveryMinuteJob>("* * * * *");
 
                 if (evenMinutes)
-                    s.AddCronJob<EvenMinutesJob>("*/2 * * * *");
+                    s.AddCronJob("EvenMinutes", "*/2 * * * *", async sp =>
+                    {
+                        var logger = sp.GetRequiredService<ILogger<Program>>();
+                        if (logger.IsEnabled(LogLevel.Information))
+                            logger.LogInformation("EvenMinuteJob Run Thread={ManagedThreadId}", Thread.CurrentThread.ManagedThreadId);
+
+                        await Task.Delay(TimeSpan.FromSeconds(5));
+                    });
 
                 if (sample1)
-                    s.AddJob(sp => new Sample1Job(sp.GetRequiredService<ILoggerFactory>()), o => o.ApplyDefaults<Sample1Job>().WaitForStartupActions(true).InitialDelay(TimeSpan.FromSeconds(4)));
+                    s.AddJob("Sample1", sp => new Sample1Job(sp.GetRequiredService<ILoggerFactory>()), o => o.ApplyDefaults<Sample1Job>().WaitForStartupActions(true).InitialDelay(TimeSpan.FromSeconds(4)));
 
                 if (sample2)
                 {
                     s.AddHealthChecks().AddCheck<Sample2Job>("Sample2Job");
-                    s.AddJob<Sample2Job>(true);
+                    s.AddJob<Sample2Job>(o => o.WaitForStartupActions(true));
                 }
 
                 // if you don't specify priority, actions will automatically be assigned an incrementing priority starting at 0

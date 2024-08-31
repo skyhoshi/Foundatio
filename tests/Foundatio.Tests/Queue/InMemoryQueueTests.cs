@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Foundatio.Queues;
-using Foundatio.Utility;
 using Microsoft.Extensions.Logging;
 using Xunit;
 using Xunit.Abstractions;
@@ -17,7 +16,7 @@ public class InMemoryQueueTests : QueueTestBase
 
     public InMemoryQueueTests(ITestOutputHelper output) : base(output) { }
 
-    protected override IQueue<SimpleWorkItem> GetQueue(int retries = 1, TimeSpan? workItemTimeout = null, TimeSpan? retryDelay = null, int[] retryMultipliers = null, int deadLetterMaxItems = 100, bool runQueueMaintenance = true)
+    protected override IQueue<SimpleWorkItem> GetQueue(int retries = 1, TimeSpan? workItemTimeout = null, TimeSpan? retryDelay = null, int[] retryMultipliers = null, int deadLetterMaxItems = 100, bool runQueueMaintenance = true, TimeProvider timeProvider = null)
     {
         if (_queue == null)
             _queue = new InMemoryQueue<SimpleWorkItem>(o => o
@@ -25,6 +24,7 @@ public class InMemoryQueueTests : QueueTestBase
                 .Retries(retries)
                 .RetryMultipliers(retryMultipliers ?? new[] { 1, 3, 5, 10 })
                 .WorkItemTimeout(workItemTimeout.GetValueOrDefault(TimeSpan.FromMinutes(5)))
+                .TimeProvider(timeProvider)
                 .LoggerFactory(Log));
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Queue Id: {QueueId}", _queue.QueueId);
@@ -55,22 +55,22 @@ public class InMemoryQueueTests : QueueTestBase
         {
             disposables.Add(q.Enqueuing.AddHandler(async (sender, args) =>
             {
-                await SystemClock.SleepAsync(250);
+                await Task.Delay(250);
                 _logger.LogInformation("First Enqueuing");
             }));
             disposables.Add(q.Enqueuing.AddHandler(async (sender, args) =>
             {
-                await SystemClock.SleepAsync(250);
+                await Task.Delay(250);
                 _logger.LogInformation("Second Enqueuing");
             }));
             disposables.Add(q.Enqueued.AddHandler(async (sender, args) =>
             {
-                await SystemClock.SleepAsync(250);
+                await Task.Delay(250);
                 _logger.LogInformation("First");
             }));
             disposables.Add(q.Enqueued.AddHandler(async (sender, args) =>
             {
-                await SystemClock.SleepAsync(250);
+                await Task.Delay(250);
                 _logger.LogInformation("Second");
             }));
 
@@ -204,10 +204,7 @@ public class InMemoryQueueTests : QueueTestBase
     [Fact]
     public override Task WorkItemsWillTimeoutAsync()
     {
-        using (TestSystemClock.Install())
-        {
-            return base.WorkItemsWillTimeoutAsync();
-        }
+        return base.WorkItemsWillTimeoutAsync();
     }
 
     [Fact]
@@ -384,11 +381,11 @@ public class InMemoryQueueTests : QueueTestBase
     // https://github.com/FoundatioFx/Foundatio/issues/239
     public virtual async Task CompleteOnAutoAbandonedHandledProperly_Issue239()
     {
-        // create queue with short work item timeout so it will be auto abandoned
+        // create queue with short work item timeout, so it will be auto abandoned
         var queue = new InMemoryQueue_Issue239<SimpleWorkItem>(Log);
         using var cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        // completion source to wait for CompleteAsync call before the assert
+        // completion source to wait for CompleteAsync call before to assert
         var taskCompletionSource = new TaskCompletionSource<bool>();
 
         // start handling items

@@ -36,17 +36,20 @@ public class WorkItemJob : IQueueJob<WorkItemData>, IHaveLogger
     {
         IQueueEntry<WorkItemData> queueEntry;
 
-        using (var timeoutCancellationTokenSource = new CancellationTokenSource(30000))
-        using (var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCancellationTokenSource.Token))
+        using var linkedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linkedCancellationTokenSource.CancelAfter(TimeSpan.FromSeconds(30));
+
+        try
         {
-            try
-            {
-                queueEntry = await _queue.DequeueAsync(linkedCancellationTokenSource.Token).AnyContext();
-            }
-            catch (Exception ex)
-            {
-                return JobResult.FromException(ex, $"Error trying to dequeue work item: {ex.Message}");
-            }
+            queueEntry = await _queue.DequeueAsync(linkedCancellationTokenSource.Token).AnyContext();
+        }
+        catch (OperationCanceledException)
+        {
+            return JobResult.Cancelled;
+        }
+        catch (Exception ex)
+        {
+            return JobResult.FromException(ex, $"Error trying to dequeue work item: {ex.Message}");
         }
 
         return await ProcessAsync(queueEntry, cancellationToken).AnyContext();
@@ -54,8 +57,11 @@ public class WorkItemJob : IQueueJob<WorkItemData>, IHaveLogger
 
     public async Task<JobResult> ProcessAsync(IQueueEntry<WorkItemData> queueEntry, CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested && queueEntry == null)
+            return JobResult.Cancelled;
+
         if (queueEntry == null)
-            return JobResult.Success;
+            return JobResult.CancelledWithMessage("No queue entry to process.");
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -99,13 +105,13 @@ public class WorkItemJob : IQueueJob<WorkItemData>, IHaveLogger
             await ReportProgressAsync(handler, queueEntry).AnyContext();
 
         var lockValue = await handler.GetWorkItemLockAsync(workItemData, cancellationToken).AnyContext();
-        if (lockValue == null)
+        if (lockValue is null)
         {
             if (handler.Log.IsEnabled(LogLevel.Information))
-                handler.Log.LogInformation("Abandoning {TypeName} work item: {Id}: Unable to acquire work item lock.", queueEntry.Value.Type, queueEntry.Id);
+                handler.Log.LogInformation("Abandoning {TypeName} work item: {Id}: Unable to acquire work item lock", queueEntry.Value.Type, queueEntry.Id);
 
             await queueEntry.AbandonAsync().AnyContext();
-            return JobResult.Success;
+            return JobResult.CancelledWithMessage($"Unable to acquire work item lock. Abandoning {queueEntry.Value.Type} queue entry: {queueEntry.Id}");
         }
 
         var progressCallback = new Func<int, string, Task>(async (progress, message) =>
@@ -180,9 +186,8 @@ public class WorkItemJob : IQueueJob<WorkItemData>, IHaveLogger
     protected virtual Activity StartProcessWorkItemActivity(IQueueEntry<WorkItemData> entry, Type workItemDataType)
     {
         var activity = FoundatioDiagnostics.ActivitySource.StartActivity("ProcessQueueEntry", ActivityKind.Server, entry.CorrelationId);
-
-        if (activity == null)
-            return activity;
+        if (activity is null)
+            return null;
 
         if (entry.Properties != null && entry.Properties.TryGetValue("TraceState", out var traceState))
             activity.TraceStateString = traceState.ToString();

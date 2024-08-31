@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Foundatio.Utility;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,40 +13,47 @@ namespace Foundatio.Jobs;
 
 public class JobRunner
 {
+    private readonly TimeProvider _timeProvider;
     private readonly ILogger _logger;
     private string _jobName;
     private readonly JobOptions _options;
+    private readonly IServiceProvider _serviceProvider;
 
-    public JobRunner(JobOptions options, ILoggerFactory loggerFactory = null)
+    public JobRunner(JobOptions options, IServiceProvider serviceProvider, ILoggerFactory loggerFactory = null)
     {
+        _timeProvider = serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System;
         _logger = loggerFactory?.CreateLogger<JobRunner>() ?? NullLogger<JobRunner>.Instance;
         _options = options;
+        _serviceProvider = serviceProvider;
     }
 
-    public JobRunner(IJob instance, ILoggerFactory loggerFactory = null, TimeSpan? initialDelay = null, int instanceCount = 1, bool runContinuous = true, int iterationLimit = -1, TimeSpan? interval = null)
+    public JobRunner(IJob instance, IServiceProvider serviceProvider, ILoggerFactory loggerFactory = null, TimeSpan? initialDelay = null, int instanceCount = 1, bool runContinuous = true, int iterationLimit = -1, TimeSpan? interval = null)
         : this(new JobOptions
         {
-            JobFactory = () => instance,
+            JobFactory = _ => instance,
             InitialDelay = initialDelay,
             InstanceCount = instanceCount,
             IterationLimit = iterationLimit,
             RunContinuous = runContinuous,
             Interval = interval
-        }, loggerFactory)
+        }, serviceProvider, loggerFactory)
     {
     }
 
-    public JobRunner(Func<IJob> jobFactory, ILoggerFactory loggerFactory = null, TimeSpan? initialDelay = null, int instanceCount = 1, bool runContinuous = true, int iterationLimit = -1, TimeSpan? interval = null)
+    public JobRunner(Func<IServiceProvider, IJob> jobFactory, IServiceProvider serviceProvider,
+        ILoggerFactory loggerFactory = null, TimeSpan? initialDelay = null, int instanceCount = 1,
+        bool runContinuous = true, int iterationLimit = -1, TimeSpan? interval = null)
         : this(new JobOptions
-        {
-            JobFactory = jobFactory,
-            InitialDelay = initialDelay,
-            InstanceCount = instanceCount,
-            IterationLimit = iterationLimit,
-            RunContinuous = runContinuous,
-            Interval = interval
-        }, loggerFactory)
-    { }
+    {
+        JobFactory = jobFactory,
+        InitialDelay = initialDelay,
+        InstanceCount = instanceCount,
+        IterationLimit = iterationLimit,
+        RunContinuous = runContinuous,
+        Interval = interval
+    }, serviceProvider, loggerFactory)
+    {
+    }
 
     public CancellationTokenSource CancellationTokenSource { get; private set; }
 
@@ -127,7 +135,7 @@ public class JobRunner
         IJob job = null;
         try
         {
-            job = _options.JobFactory();
+            job = _options.JobFactory(_serviceProvider);
         }
         catch (Exception ex)
         {
@@ -160,33 +168,40 @@ public class JobRunner
             try
             {
                 if (_options.InitialDelay.HasValue && _options.InitialDelay.Value > TimeSpan.Zero)
-                    await SystemClock.SleepAsync(_options.InitialDelay.Value, cancellationToken).AnyContext();
+                    await _timeProvider.SafeDelay(_options.InitialDelay.Value, cancellationToken).AnyContext();
 
                 if (_options.RunContinuous && _options.InstanceCount > 1)
                 {
-                    var tasks = new List<Task>(_options.InstanceCount);
-                    for (int i = 0; i < _options.InstanceCount; i++)
+                    try
                     {
-                        tasks.Add(Task.Run(async () =>
+                        var tasks = new List<Task>(_options.InstanceCount);
+                        for (int i = 0; i < _options.InstanceCount; i++)
                         {
-                            try
+                            tasks.Add(Task.Run(async () =>
                             {
-                                var jobInstance = _options.JobFactory();
-                                await jobInstance.RunContinuousAsync(_options.Interval, _options.IterationLimit, cancellationToken).AnyContext();
-                            }
-                            catch (TaskCanceledException)
-                            {
-                            }
-                            catch (Exception ex)
-                            {
-                                if (_logger.IsEnabled(LogLevel.Error))
-                                    _logger.LogError(ex, "Error running job instance: {Message}", ex.Message);
-                                throw;
-                            }
-                        }, cancellationToken));
-                    }
+                                try
+                                {
+                                    var jobInstance = _options.JobFactory(_serviceProvider);
+                                    await jobInstance.RunContinuousAsync(_options.Interval, _options.IterationLimit,
+                                        cancellationToken).AnyContext();
+                                }
+                                catch (TaskCanceledException)
+                                {
+                                }
+                                catch (Exception ex)
+                                {
+                                    if (_logger.IsEnabled(LogLevel.Error))
+                                        _logger.LogError(ex, "Error running job instance: {Message}", ex.Message);
+                                    throw;
+                                }
+                            }, cancellationToken));
+                        }
 
-                    await Task.WhenAll(tasks).AnyContext();
+                        await Task.WhenAll(tasks).AnyContext();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
                 }
                 else if (_options.RunContinuous && _options.InstanceCount == 1)
                 {

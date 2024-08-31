@@ -19,6 +19,7 @@ public abstract class MessageBusBase<TOptions> : IMessageBus, IDisposable where 
     protected readonly ConcurrentDictionary<string, Subscriber> _subscribers = new();
     protected readonly TOptions _options;
     protected readonly ILogger _logger;
+    protected readonly TimeProvider _timeProvider;
     protected readonly ISerializer _serializer;
     private bool _isDisposed;
 
@@ -27,6 +28,7 @@ public abstract class MessageBusBase<TOptions> : IMessageBus, IDisposable where 
         _options = options ?? throw new ArgumentNullException(nameof(options));
         var loggerFactory = options?.LoggerFactory ?? NullLoggerFactory.Instance;
         _logger = loggerFactory.CreateLogger(GetType());
+        _timeProvider = options.TimeProvider;
         _serializer = options.Serializer ?? DefaultSerializer.Instance;
         MessageBusId = _options.Topic + Guid.NewGuid().ToString("N").Substring(10);
         _messageBusDisposedCancellationTokenSource = new CancellationTokenSource();
@@ -296,9 +298,8 @@ public abstract class MessageBusBase<TOptions> : IMessageBus, IDisposable where 
     protected virtual Activity StartHandleMessageActivity(IMessage message)
     {
         var activity = FoundatioDiagnostics.ActivitySource.StartActivity("HandleMessage", ActivityKind.Server, message.CorrelationId);
-
-        if (activity == null)
-            return activity;
+        if (activity is null)
+            return null;
 
         if (message.Properties != null && message.Properties.TryGetValue("TraceState", out var traceState))
             activity.TraceStateString = traceState.ToString();
@@ -348,10 +349,10 @@ public abstract class MessageBusBase<TOptions> : IMessageBus, IDisposable where 
         if (delay <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(delay));
 
-        var sendTime = SystemClock.UtcNow.SafeAdd(delay);
+        var sendTime = _timeProvider.GetUtcNow().UtcDateTime.SafeAdd(delay);
         Task.Factory.StartNew(async () =>
         {
-            await SystemClock.SleepSafeAsync(delay, _messageBusDisposedCancellationTokenSource.Token).AnyContext();
+            await _timeProvider.SafeDelay(delay, _messageBusDisposedCancellationTokenSource.Token).AnyContext();
 
             bool isTraceLevelEnabled = _logger.IsEnabled(LogLevel.Trace);
             if (_messageBusDisposedCancellationTokenSource.IsCancellationRequested)

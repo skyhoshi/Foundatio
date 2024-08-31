@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,10 +9,8 @@ using Exceptionless;
 using Foundatio.AsyncEx;
 using Foundatio.Jobs;
 using Foundatio.Messaging;
-using Foundatio.Metrics;
 using Foundatio.Queues;
 using Foundatio.Tests.Extensions;
-using Foundatio.Utility;
 using Foundatio.Xunit;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -38,7 +37,7 @@ public class WorkItemJobTests : TestWithLoggingBase
 
             for (int i = 0; i < 10; i++)
             {
-                await SystemClock.SleepAsync(100);
+                await Task.Delay(100);
                 await ctx.ReportProgressAsync(10 * i);
             }
         });
@@ -67,11 +66,7 @@ public class WorkItemJobTests : TestWithLoggingBase
     {
         const int workItemCount = 1000;
 
-        using var metrics = new InMemoryMetricsClient(o => o.LoggerFactory(Log));
         using var queue = new InMemoryQueue<WorkItemData>(o => o.RetryDelay(TimeSpan.Zero).Retries(0).LoggerFactory(Log));
-#pragma warning disable CS0618 // Type or member is obsolete
-        queue.AttachBehavior(new MetricsQueueBehavior<WorkItemData>(metrics, loggerFactory: Log));
-#pragma warning restore CS0618 // Type or member is obsolete
         using var messageBus = new InMemoryMessageBus(o => o.LoggerFactory(Log));
         var handlerRegistry = new WorkItemHandlers();
         var j1 = new WorkItemJob(queue, messageBus, handlerRegistry, Log);
@@ -147,7 +142,7 @@ public class WorkItemJobTests : TestWithLoggingBase
                 _logger.LogError(ex, "One or more tasks were cancelled: {Message}", ex.Message);
         }
 
-        await SystemClock.SleepAsync(100);
+        await Task.Delay(100);
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Completed: {CompletedItems} Errors: {Errors}", completedItems.Count, errors);
         Assert.Equal(workItemCount, completedItems.Count + errors);
@@ -178,7 +173,7 @@ public class WorkItemJobTests : TestWithLoggingBase
             countdown.Signal();
         });
 
-        await job.RunUntilEmptyAsync();
+        Assert.Equal(1, await job.RunUntilEmptyAsync());
         await countdown.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal(0, countdown.CurrentCount);
     }
@@ -198,7 +193,7 @@ public class WorkItemJobTests : TestWithLoggingBase
 
             for (int i = 1; i < 10; i++)
             {
-                await SystemClock.SleepAsync(100);
+                await Task.Delay(100);
                 await ctx.ReportProgressAsync(10 * i);
             }
         }, Log.CreateLogger("MyWorkItem"));
@@ -216,7 +211,7 @@ public class WorkItemJobTests : TestWithLoggingBase
             countdown.Signal();
         });
 
-        await job.RunUntilEmptyAsync();
+        Assert.Equal(1, await job.RunUntilEmptyAsync());
         await countdown.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal(0, countdown.CurrentCount);
     }
@@ -241,11 +236,61 @@ public class WorkItemJobTests : TestWithLoggingBase
             SomeData = "Test"
         }, true);
 
-        await job.RunUntilEmptyAsync();
+        Assert.Equal(2, await job.RunUntilEmptyAsync());
         var stats = await queue.GetQueueStatsAsync();
         Assert.Equal(2, stats.Enqueued);
         Assert.Equal(2, stats.Dequeued);
         Assert.Equal(2, stats.Completed);
+    }
+
+    [Fact]
+    public async Task CanRunWorkItemJobUntilEmptyWithNoEnqueuedItems()
+    {
+        using var queue = new InMemoryQueue<WorkItemData>(o => o.LoggerFactory(Log));
+        using var messageBus = new InMemoryMessageBus(o => o.LoggerFactory(Log));
+        var handlerRegistry = new WorkItemHandlers();
+        var job = new WorkItemJob(queue, messageBus, handlerRegistry, Log);
+
+        handlerRegistry.Register<MyWorkItem>(new MyWorkItemHandler(Log));
+
+        var sw = Stopwatch.StartNew();
+        Assert.Equal(0, await job.RunUntilEmptyAsync(TimeSpan.FromMilliseconds(100)));
+        sw.Stop();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromMilliseconds(250));
+
+        var stats = await queue.GetQueueStatsAsync();
+        Assert.Equal(0, stats.Enqueued);
+        Assert.Equal(0, stats.Dequeued);
+        Assert.Equal(0, stats.Completed);
+    }
+
+    [Fact]
+    public async Task CanRunWorkItemJobUntilEmptyHandlesCancellation()
+    {
+        using var queue = new InMemoryQueue<WorkItemData>(o => o.LoggerFactory(Log));
+        using var messageBus = new InMemoryMessageBus(o => o.LoggerFactory(Log));
+        var handlerRegistry = new WorkItemHandlers();
+        var job = new WorkItemJob(queue, messageBus, handlerRegistry, Log);
+
+        handlerRegistry.Register<MyWorkItem>(new MyWorkItemHandler(Log));
+
+        await queue.EnqueueAsync(new MyWorkItem
+        {
+            SomeData = "Test"
+        }, true);
+
+        await queue.EnqueueAsync(new MyWorkItem
+        {
+            SomeData = "Test"
+        }, true);
+
+        Assert.Equal(1, await job.RunUntilEmptyAsync(TimeSpan.FromMilliseconds(50)));
+
+        var stats = await queue.GetQueueStatsAsync();
+        Assert.Equal(2, stats.Enqueued);
+        Assert.Equal(1, stats.Dequeued);
+        Assert.Equal(1, stats.Completed);
     }
 
     [Fact]
@@ -276,7 +321,7 @@ public class WorkItemJobTests : TestWithLoggingBase
             countdown.Signal();
         });
 
-        await job.RunUntilEmptyAsync();
+        Assert.Equal(0, await job.RunUntilEmptyAsync());
         await countdown.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal(0, countdown.CurrentCount);
     }
@@ -299,7 +344,7 @@ public class MyWorkItemHandler : WorkItemHandlerBase
 
         for (int i = 1; i < 10; i++)
         {
-            await SystemClock.SleepAsync(100);
+            await Task.Delay(10);
             await context.ReportProgressAsync(10 * i);
         }
     }
